@@ -18,24 +18,18 @@
  */
 package org.apache.maven.plugins.jarsigner;
 
-import javax.inject.Inject;
-import javax.inject.Named;
-
 import java.io.File;
 import java.io.IOException;
 
-import org.apache.maven.plugin.MojoExecutionException;
-import org.apache.maven.plugins.annotations.LifecyclePhase;
-import org.apache.maven.plugins.annotations.Mojo;
-import org.apache.maven.plugins.annotations.Parameter;
+import org.apache.maven.api.plugin.MojoException;
+import org.apache.maven.api.plugin.annotations.Mojo;
+import org.apache.maven.api.plugin.annotations.Parameter;
 import org.apache.maven.shared.jarsigner.JarSigner;
 import org.apache.maven.shared.jarsigner.JarSignerRequest;
 import org.apache.maven.shared.jarsigner.JarSignerUtil;
 import org.apache.maven.shared.jarsigner.JarSignerVerifyRequest;
 import org.apache.maven.shared.utils.cli.javatool.JavaToolException;
 import org.apache.maven.shared.utils.cli.javatool.JavaToolResult;
-import org.apache.maven.toolchain.ToolchainManager;
-import org.sonatype.plexus.components.sec.dispatcher.SecDispatcher;
 
 /**
  * Checks the signatures of a project artifact and attachments using jarsigner.
@@ -43,7 +37,7 @@ import org.sonatype.plexus.components.sec.dispatcher.SecDispatcher;
  * @author <a href="cs@schulte.it">Christian Schulte</a>
  * @since 1.0
  */
-@Mojo(name = "verify", defaultPhase = LifecyclePhase.VERIFY, threadSafe = true)
+@Mojo(name = "verify", defaultPhase = "verify")
 public class JarsignerVerifyMojo extends AbstractJarsignerMojo {
 
     /**
@@ -63,19 +57,6 @@ public class JarsignerVerifyMojo extends AbstractJarsignerMojo {
     @Parameter(property = "jarsigner.errorWhenNotSigned", defaultValue = "false")
     private boolean errorWhenNotSigned;
 
-    @Inject
-    public JarsignerVerifyMojo(
-            JarSigner jarSigner,
-            ToolchainManager toolchainManager,
-            @Named("mng-4384") SecDispatcher securityDispatcher) {
-        super(jarSigner, toolchainManager, securityDispatcher);
-    }
-
-    // for testing; invoked via reflection
-    JarsignerVerifyMojo() {
-        super(null, null, null);
-    }
-
     /**
      * {@inheritDoc}
      */
@@ -87,7 +68,7 @@ public class JarsignerVerifyMojo extends AbstractJarsignerMojo {
     }
 
     @Override
-    protected void preProcessArchive(File archive) throws MojoExecutionException {
+    protected void preProcessArchive(File archive) throws MojoException {
         super.preProcessArchive(archive);
 
         if (errorWhenNotSigned) {
@@ -97,26 +78,24 @@ public class JarsignerVerifyMojo extends AbstractJarsignerMojo {
             try {
                 archiveSigned = JarSignerUtil.isArchiveSigned(archive);
             } catch (IOException e) {
-                throw new MojoExecutionException(
-                        "Failed to check if archive " + archive + " is signed: " + e.getMessage(), e);
+                throw new MojoException("Failed to check if archive " + archive + " is signed: " + e.getMessage(), e);
             }
 
             if (!archiveSigned) {
 
                 // fails, archive must be signed
-                throw new MojoExecutionException(getMessage("archiveNotSigned", archive));
+                throw new MojoException(getMessage("archiveNotSigned", archive));
             }
         }
     }
 
     @Override
     protected void executeJarSigner(JarSigner jarSigner, JarSignerRequest request)
-            throws JavaToolException, MojoExecutionException {
+            throws JavaToolException, MojoException {
         JavaToolResult result = jarSigner.execute(request);
         int resultCode = result.getExitCode();
         if (resultCode != 0) {
-            throw new MojoExecutionException(
-                    getMessage("failure", getCommandlineInfo(result.getCommandline()), resultCode));
+            throw new MojoException(getMessage("failure", getCommandlineInfo(result.getCommandline()), resultCode));
         }
     }
 }

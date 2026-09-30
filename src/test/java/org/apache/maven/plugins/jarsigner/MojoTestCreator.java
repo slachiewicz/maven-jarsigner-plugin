@@ -20,22 +20,34 @@ package org.apache.maven.plugins.jarsigner;
 
 import java.io.File;
 import java.lang.reflect.Field;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
+import java.util.function.UnaryOperator;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
-import org.apache.maven.plugin.Mojo;
-import org.apache.maven.plugin.logging.Log;
+import org.apache.maven.api.ProducedArtifact;
+import org.apache.maven.api.Project;
+import org.apache.maven.api.Session;
+import org.apache.maven.api.plugin.Log;
+import org.apache.maven.api.plugin.Mojo;
+import org.apache.maven.api.services.ArtifactManager;
+import org.apache.maven.api.services.ProjectManager;
+import org.apache.maven.api.services.ToolchainManager;
+import org.apache.maven.api.settings.Settings;
 import org.apache.maven.plugins.jarsigner.JarsignerSignMojo.WaitStrategy;
-import org.apache.maven.project.MavenProject;
 import org.apache.maven.shared.jarsigner.JarSigner;
-import org.apache.maven.toolchain.ToolchainManager;
+import org.codehaus.plexus.components.secdispatcher.SecDispatcher;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.sonatype.plexus.components.sec.dispatcher.SecDispatcher;
+
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 /**
  * Creates and configures a Mojo instance to be used in testing.
@@ -47,23 +59,24 @@ public class MojoTestCreator<T extends AbstractJarsignerMojo> {
     private final Logger logger = LoggerFactory.getLogger(MojoTestCreator.class);
 
     private final Class<T> clazz;
-    private final MavenProject project;
+    private final ProjectStub project;
     private final File projectDir;
     private final JarSigner jarSigner;
     private ToolchainManager toolchainManager;
-    private SecDispatcher securityDispatcher;
+    private UnaryOperator<String> decryptor;
     private WaitStrategy waitStrategy;
     private Log log;
     private List<Field> fields;
+    private Settings settings;
+    private final ArtifactManager artifactManager = mock(ArtifactManager.class);
 
-    public MojoTestCreator(Class<T> clazz, MavenProject project, File projectDir, JarSigner jarSigner)
-            throws Exception {
+    public MojoTestCreator(Class<T> clazz, ProjectStub project, File projectDir, JarSigner jarSigner) throws Exception {
         this.clazz = clazz;
         this.project = project;
         this.projectDir = projectDir;
         this.jarSigner = jarSigner;
 
-        securityDispatcher = str -> str; // Simple SecDispatcher that only returns parameter
+        decryptor = str -> str; // Simple SecDispatcher that only returns parameter
         fields = getAllFields(clazz);
     }
 
@@ -71,8 +84,12 @@ public class MojoTestCreator<T extends AbstractJarsignerMojo> {
         this.toolchainManager = toolchainManager;
     }
 
-    public void setSecDispatcher(SecDispatcher securityDispatcher) {
-        this.securityDispatcher = securityDispatcher;
+    public void setSecDispatcher(UnaryOperator<String> decryptor) {
+        this.decryptor = decryptor;
+    }
+
+    public void setSettings(Settings settings) {
+        this.settings = settings;
     }
 
     public void setWaitStrategy(WaitStrategy waitStrategy) {
@@ -92,9 +109,16 @@ public class MojoTestCreator<T extends AbstractJarsignerMojo> {
         T mojo = clazz.getDeclaredConstructor(parameterTypes).newInstance();
         setDefaultValues(mojo);
 
-        setAttribute(mojo, "project", project);
+        setAttribute(mojo, "project", mock(Project.class));
+        if (settings != null) {
+            Session session = mock(Session.class);
+            when(session.getSettings()).thenReturn(settings);
+            setAttribute(mojo, "session", session);
+        }
+        setAttribute(mojo, "projectManager", createProjectManager());
+        setAttribute(mojo, "artifactManager", artifactManager);
         setAttribute(mojo, "jarSigner", jarSigner);
-        setAttribute(mojo, "securityDispatcher", securityDispatcher);
+        setAttribute(mojo, "securityDispatcher", createSecDispatcher());
         if (toolchainManager != null) {
             setAttribute(mojo, "toolchainManager", toolchainManager);
         }
@@ -102,7 +126,7 @@ public class MojoTestCreator<T extends AbstractJarsignerMojo> {
             ((JarsignerSignMojo) mojo).setWaitStrategy(waitStrategy);
         }
         if (log != null) {
-            mojo.setLog(log);
+            setAttribute(mojo, "log", log);
         }
 
         for (Map.Entry<String, String> entry : configuration.entrySet()) {
@@ -111,6 +135,38 @@ public class MojoTestCreator<T extends AbstractJarsignerMojo> {
         }
 
         return mojo;
+    }
+
+    private ProjectManager createProjectManager() {
+        ProjectManager projectManager = mock(ProjectManager.class);
+        when(projectManager.getPath(any())).thenAnswer(invocation -> {
+            TestArtifacts.TestArtifact artifact = project.getArtifact();
+            return artifact == null
+                    ? Optional.empty()
+                    : Optional.of(artifact.getFile().toPath());
+        });
+        when(projectManager.getAttachedArtifacts(any())).thenAnswer(invocation -> {
+            List<TestArtifacts.TestArtifact> attached = project.getAttachedArtifacts();
+            List<ProducedArtifact> result = new ArrayList<>();
+            if (attached != null) {
+                for (TestArtifacts.TestArtifact testArtifact : attached) {
+                    ProducedArtifact artifact = mock(ProducedArtifact.class);
+                    when(artifact.getClassifier()).thenReturn(testArtifact.getClassifier());
+                    when(artifact.key()).thenReturn(testArtifact.key());
+                    when(artifactManager.getPath(artifact))
+                            .thenReturn(Optional.of(testArtifact.getFile().toPath()));
+                    result.add(artifact);
+                }
+            }
+            return result;
+        });
+        return projectManager;
+    }
+
+    private SecDispatcher createSecDispatcher() throws Exception {
+        SecDispatcher securityDispatcher = mock(SecDispatcher.class);
+        when(securityDispatcher.decrypt(any())).thenAnswer(invocation -> decryptor.apply(invocation.getArgument(0)));
+        return securityDispatcher;
     }
 
     private void setFieldByStringValue(Object instance, Field field, String stringValue) throws Exception {
@@ -124,6 +180,8 @@ public class MojoTestCreator<T extends AbstractJarsignerMojo> {
             field.setBoolean(instance, Boolean.parseBoolean(stringValue));
         } else if (fieldType.equals(File.class)) {
             field.set(instance, new File(stringValue));
+        } else if (fieldType.equals(Path.class)) {
+            field.set(instance, new File(stringValue).toPath());
         } else if (fieldType.equals(String[].class)) {
             if (stringValue.isEmpty()) {
                 // Maven defaults to empty list if no default value exists

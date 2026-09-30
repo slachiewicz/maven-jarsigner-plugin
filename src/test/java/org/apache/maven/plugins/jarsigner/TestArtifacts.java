@@ -25,9 +25,6 @@ import java.nio.file.Files;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
 
-import org.apache.maven.artifact.Artifact;
-import org.apache.maven.artifact.DefaultArtifact;
-
 /**
  * Test utility class to create Artifact objects, jar file or other files that Maven attaches to a project
  */
@@ -38,33 +35,56 @@ class TestArtifacts {
     static final String TEST_TYPE = "jar";
     static final String TEST_CLASSIFIER = "";
 
-    static Artifact createArtifact(File file) throws IOException {
+    static TestArtifact createArtifact(File file) throws IOException {
         return createArtifact(file, TEST_TYPE, TEST_CLASSIFIER);
     }
 
-    static Artifact createArtifact(File file, String type, String classifier) throws IOException {
-        Artifact artifact = new DefaultArtifact(
-                TEST_GROUPID, TEST_ARTIFACTID, TEST_VERSION, Artifact.SCOPE_COMPILE, type, classifier, null);
-        artifact.setFile(file);
-        return artifact;
+    static TestArtifact createArtifact(File file, String type, String classifier) throws IOException {
+        return new TestArtifact(file, type, classifier);
     }
 
-    static Artifact createJarArtifact(File directory, String filename) throws IOException {
+    /** What is left of an artifact for these tests: its file, type and classifier. */
+    static final class TestArtifact {
+        private final File file;
+        private final String type;
+        private final String classifier;
+
+        TestArtifact(File file, String type, String classifier) {
+            this.file = file;
+            this.type = type;
+            this.classifier = classifier;
+        }
+
+        File getFile() {
+            return file;
+        }
+
+        String getClassifier() {
+            return classifier;
+        }
+
+        String key() {
+            return TEST_GROUPID + ":" + TEST_ARTIFACTID + ":" + type + ":" + classifier + ":" + TEST_VERSION;
+        }
+    }
+
+    static TestArtifact createJarArtifact(File directory, String filename) throws IOException {
         return createJarArtifact(directory, filename, TEST_CLASSIFIER);
     }
 
-    public static Artifact createJarArtifact(File directory, String filename, String classifier) throws IOException {
+    public static TestArtifact createJarArtifact(File directory, String filename, String classifier)
+            throws IOException {
         return createJarArtifact(directory, filename, classifier, TEST_TYPE);
     }
 
-    public static Artifact createJarArtifact(File directory, String filename, String classifier, String type)
+    public static TestArtifact createJarArtifact(File directory, String filename, String classifier, String type)
             throws IOException {
         File file = new File(directory, filename);
         createDummyZipFile(file);
         return createArtifact(file, type, classifier);
     }
 
-    static Artifact createPomArtifact(File directory, String filename) throws IOException {
+    static TestArtifact createPomArtifact(File directory, String filename) throws IOException {
         File file = new File(directory, filename);
         createDummyXMLFile(file);
         return createArtifact(file, TEST_TYPE, "");
