@@ -21,6 +21,7 @@ package org.apache.maven.plugins.jarsigner;
 import java.io.File;
 import java.io.IOException;
 import java.nio.charset.Charset;
+import java.nio.file.Path;
 import java.text.MessageFormat;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -31,32 +32,36 @@ import java.util.Optional;
 import java.util.ResourceBundle;
 import java.util.StringJoiner;
 
-import org.apache.maven.artifact.Artifact;
-import org.apache.maven.execution.MavenSession;
-import org.apache.maven.plugin.AbstractMojo;
-import org.apache.maven.plugin.MojoExecutionException;
-import org.apache.maven.plugins.annotations.Parameter;
-import org.apache.maven.project.MavenProject;
-import org.apache.maven.settings.Proxy;
-import org.apache.maven.settings.Settings;
+import org.apache.maven.api.ProducedArtifact;
+import org.apache.maven.api.Project;
+import org.apache.maven.api.Session;
+import org.apache.maven.api.Toolchain;
+import org.apache.maven.api.di.Inject;
+import org.apache.maven.api.plugin.Log;
+import org.apache.maven.api.plugin.Mojo;
+import org.apache.maven.api.plugin.MojoException;
+import org.apache.maven.api.plugin.annotations.Parameter;
+import org.apache.maven.api.services.ArtifactManager;
+import org.apache.maven.api.services.ProjectManager;
+import org.apache.maven.api.services.ToolchainManager;
+import org.apache.maven.api.settings.Proxy;
+import org.apache.maven.shared.jarsigner.DefaultJarSigner;
 import org.apache.maven.shared.jarsigner.JarSigner;
 import org.apache.maven.shared.jarsigner.JarSignerRequest;
 import org.apache.maven.shared.jarsigner.JarSignerUtil;
 import org.apache.maven.shared.utils.cli.Commandline;
 import org.apache.maven.shared.utils.cli.javatool.JavaToolException;
-import org.apache.maven.toolchain.Toolchain;
-import org.apache.maven.toolchain.ToolchainManager;
+import org.codehaus.plexus.components.secdispatcher.SecDispatcher;
+import org.codehaus.plexus.components.secdispatcher.SecDispatcherException;
 import org.codehaus.plexus.util.FileUtils;
 import org.codehaus.plexus.util.StringUtils;
-import org.sonatype.plexus.components.sec.dispatcher.SecDispatcher;
-import org.sonatype.plexus.components.sec.dispatcher.SecDispatcherException;
 
 /**
  * Maven Jarsigner Plugin base class.
  *
  * @author <a href="cs@schulte.it">Christian Schulte</a>
  */
-public abstract class AbstractJarsignerMojo extends AbstractMojo {
+public abstract class AbstractJarsignerMojo implements Mojo {
 
     /**
      * See <a href="https://docs.oracle.com/javase/7/docs/technotes/tools/windows/jarsigner.html#Options">options</a>.
@@ -117,7 +122,7 @@ public abstract class AbstractJarsignerMojo extends AbstractMojo {
      * Archive to process. If set, neither the project artifact nor any attachments or archive sets are processed.
      */
     @Parameter(property = "jarsigner.archive")
-    private File archive;
+    private Path archive;
 
     /**
      * The base directory to scan for JAR files using Ant-like inclusion/exclusion patterns.
@@ -125,7 +130,7 @@ public abstract class AbstractJarsignerMojo extends AbstractMojo {
      * @since 1.1
      */
     @Parameter(property = "jarsigner.archiveDirectory")
-    private File archiveDirectory;
+    private Path archiveDirectory;
 
     /**
      * The Ant-like inclusion patterns used to select JAR files to process. The patterns must be relative to the
@@ -217,51 +222,65 @@ public abstract class AbstractJarsignerMojo extends AbstractMojo {
     private String[] excludeClassifiers;
 
     /**
-     * The Maven project.
-     */
-    @Parameter(defaultValue = "${project}", readonly = true, required = true)
-    private MavenProject project;
-
-    /**
      * Location of the working directory.
      *
      * @since 1.3
      */
     @Parameter(defaultValue = "${project.basedir}")
-    private File workingDirectory;
+    private Path workingDirectory;
 
-    /**
-     * The current build session instance. This is used for
-     * toolchain manager API calls and for the active proxy.
-     *
-     * @since 1.3
-     */
-    @Parameter(defaultValue = "${session}", readonly = true, required = true)
-    private MavenSession session;
+    @Inject
+    private Log log;
 
-    private final JarSigner jarSigner;
+    @Inject
+    private Project project;
+
+    @Inject
+    private Session session;
+
+    /** Not injectable in Maven 4.0.0-rc-7 (no DI binding); looked up from the session on first use. */
+    private ProjectManager projectManager;
+
+    @Inject
+    private ArtifactManager artifactManager;
+
+    private JarSigner jarSigner = new DefaultJarSigner();
 
     /**
      * To obtain a toolchain if possible.
      *
      * @since 1.3
      */
-    private final ToolchainManager toolchainManager;
+    @Inject
+    private ToolchainManager toolchainManager;
 
     /**
+     * Not injectable: the Maven 4 API has no service for decrypting values, see {@link SecDispatchers}.
+     *
      * @since 1.3.2
      */
-    private final SecDispatcher securityDispatcher;
+    private SecDispatcher securityDispatcher;
 
-    protected AbstractJarsignerMojo(
-            JarSigner jarSigner, ToolchainManager toolchainManager, SecDispatcher securityDispatcher) {
-        this.jarSigner = jarSigner;
-        this.toolchainManager = toolchainManager;
-        this.securityDispatcher = securityDispatcher;
+    protected Log getLog() {
+        return log;
+    }
+
+    private ProjectManager getProjectManager() {
+        if (projectManager == null) {
+            projectManager = session.getService(ProjectManager.class);
+        }
+        return projectManager;
+    }
+
+    private SecDispatcher getSecurityDispatcher() {
+        if (securityDispatcher == null) {
+            securityDispatcher = SecDispatchers.create(session);
+        }
+        return securityDispatcher;
     }
 
     @Override
-    public final void execute() throws MojoExecutionException {
+    public final void execute() throws MojoException {
         if (this.skip) {
             getLog().info(getMessage("disabled"));
             return;
@@ -272,7 +291,7 @@ public abstract class AbstractJarsignerMojo extends AbstractMojo {
         Toolchain toolchain = getToolchain();
         if (toolchain != null) {
             getLog().info("Toolchain in maven-jarsigner-plugin: " + toolchain);
-            jarSigner.setToolchain(toolchain);
+            jarSigner.setToolchain(new ToolchainAdapter(toolchain));
         }
 
         List<File> archives = findJarfiles();
@@ -284,17 +303,22 @@ public abstract class AbstractJarsignerMojo extends AbstractMojo {
      * Finds all jar files, by looking at the Maven project and user configuration.
      *
      * @return a List of File objects
-     * @throws MojoExecutionException if it was not possible to build a list of jar files
+     * @throws MojoException if it was not possible to build a list of jar files
      */
-    private List<File> findJarfiles() throws MojoExecutionException {
+    private List<File> findJarfiles() throws MojoException {
         if (this.archive != null) {
             // Only process this, but nothing more
-            return Arrays.asList(this.archive);
+            return Arrays.asList(this.archive.toFile());
         }
 
         List<File> archives = new ArrayList<>();
         if (processMainArtifact) {
-            getFileFromArtifact(this.project.getArtifact()).ifPresent(archives::add);
+            Optional<Path> mainArtifact = getProjectManager().getPath(project);
+            if (mainArtifact.isPresent()) {
+                getFileFromPath(mainArtifact.get(), project.getId()).ifPresent(archives::add);
+            } else {
+                logUnsupported(project.getId());
+            }
         }
 
         if (processAttachedArtifacts) {
@@ -308,7 +332,7 @@ public abstract class AbstractJarsignerMojo extends AbstractMojo {
                 excludes.addAll(Arrays.asList(excludeClassifiers));
             }
 
-            for (Artifact artifact : this.project.getAttachedArtifacts()) {
+            for (ProducedArtifact artifact : getProjectManager().getAttachedArtifacts(project)) {
                 if (!includes.isEmpty() && !includes.contains(artifact.getClassifier())) {
                     continue;
                 }
@@ -317,7 +341,12 @@ public abstract class AbstractJarsignerMojo extends AbstractMojo {
                     continue;
                 }
 
-                getFileFromArtifact(artifact).ifPresent(archives::add);
+                Optional<Path> path = artifactManager.getPath(artifact);
+                if (path.isPresent()) {
+                    getFileFromPath(path.get(), artifact.key()).ifPresent(archives::add);
+                } else {
+                    logUnsupported(artifact.key());
+                }
             }
         } else {
             if (verbose) {
@@ -332,9 +361,9 @@ public abstract class AbstractJarsignerMojo extends AbstractMojo {
             String excludeList = joinStrings(excludes);
 
             try {
-                archives.addAll(FileUtils.getFiles(archiveDirectory, includeList, excludeList));
+                archives.addAll(FileUtils.getFiles(archiveDirectory.toFile(), includeList, excludeList));
             } catch (IOException e) {
-                throw new MojoExecutionException("Failed to scan archive directory for JARs: " + e.getMessage(), e);
+                throw new MojoException("Failed to scan archive directory for JARs: " + e.getMessage(), e);
             }
         }
 
@@ -363,10 +392,10 @@ public abstract class AbstractJarsignerMojo extends AbstractMojo {
      *
      * @param archive the archive file to treat by jarsigner
      * @return the request
-     * @throws MojoExecutionException if an exception occurs
+     * @throws MojoException if an exception occurs
      * @since 1.3
      */
-    protected abstract JarSignerRequest createRequest(File archive) throws MojoExecutionException;
+    protected abstract JarSignerRequest createRequest(File archive) throws MojoException;
 
     /**
      * Gets a string representation of a {@code Commandline}.
@@ -397,55 +426,45 @@ public abstract class AbstractJarsignerMojo extends AbstractMojo {
     }
 
     /**
-     * Checks whether the specified artifact is a ZIP file.
+     * Examines the file of an artifact.
      *
-     * @param artifact The artifact to check, may be <code>null</code>.
-     * @return <code>true</code> if the artifact looks like a ZIP file, <code>false</code> otherwise.
+     * @param path the file of the artifact
+     * @param description what to call the artifact in log messages
+     * @return An Optional containing the File, or Optional.empty() if the File is not a jar file.
      */
-    private static boolean isZipFile(final Artifact artifact) {
-        return artifact != null && artifact.getFile() != null && JarSignerUtil.isZipFile(artifact.getFile());
+    private Optional<File> getFileFromPath(final Path path, final String description) {
+        File file = path.toFile();
+        if (JarSignerUtil.isZipFile(file)) {
+            return Optional.of(file);
+        }
+        logUnsupported(description);
+        return Optional.empty();
     }
 
-    /**
-     * Examines an Artifact and extract the File object pointing to the Artifact jar file.
-     *
-     * @param artifact the artifact to examine
-     * @return An Optional containing the File, or Optional.empty() if the File is not a jar file.
-     * @throws NullPointerException if {@code artifact} is {@code null}
-     */
-    private Optional<File> getFileFromArtifact(final Artifact artifact) {
-        if (artifact == null) {
-            throw new NullPointerException("artifact");
-        }
-
-        if (isZipFile(artifact)) {
-            return Optional.of(artifact.getFile());
-        }
-
+    private void logUnsupported(final String description) {
         if (this.verbose) {
-            getLog().info(getMessage("unsupported", artifact));
+            getLog().info(getMessage("unsupported", description));
         } else if (getLog().isDebugEnabled()) {
-            getLog().debug(getMessage("unsupported", artifact));
+            getLog().debug(getMessage("unsupported", description));
         }
-        return Optional.empty();
     }
 
     /**
      * Pre-processes a given archive.
      *
      * @param archive The archive to process, must not be <code>null</code>.
-     * @throws MojoExecutionException if pre-processing failed
+     * @throws MojoException if pre-processing failed
      */
-    protected void preProcessArchive(final File archive) throws MojoExecutionException {
+    protected void preProcessArchive(final File archive) throws MojoException {
         // Default implementation does nothing
     }
 
     /**
      * Validate the user supplied configuration/parameters.
      *
-     * @throws MojoExecutionException if the user supplied configuration make further execution impossible
+     * @throws MojoException if the user supplied configuration make further execution impossible
      */
-    protected void validateParameters() throws MojoExecutionException {
+    protected void validateParameters() throws MojoException {
         // Default implementation does nothing
     }
 
@@ -453,9 +472,9 @@ public abstract class AbstractJarsignerMojo extends AbstractMojo {
      * Process (sign/verify) a list of archives.
      *
      * @param archives list of jar files to process
-     * @throws MojoExecutionException if an error occurs during the processing of archives
+     * @throws MojoException if an error occurs during the processing of archives
      */
-    protected void processArchives(List<File> archives) throws MojoExecutionException {
+    protected void processArchives(List<File> archives) throws MojoException {
         for (File file : archives) {
             processArchive(file);
         }
@@ -466,9 +485,9 @@ public abstract class AbstractJarsignerMojo extends AbstractMojo {
      *
      * @param archive The archive to process.
      * @throws NullPointerException if {@code archive} is {@code null}
-     * @throws MojoExecutionException if processing {@code archive} fails
+     * @throws MojoException if processing {@code archive} fails
      */
-    protected final void processArchive(final File archive) throws MojoExecutionException {
+    protected final void processArchive(final File archive) throws MojoException {
         if (archive == null) {
             throw new NullPointerException("archive");
         }
@@ -490,7 +509,7 @@ public abstract class AbstractJarsignerMojo extends AbstractMojo {
         request.setProviderArg(providerArg);
         request.setProviderClass(providerClass);
         request.setProviderName(providerName);
-        request.setWorkingDirectory(workingDirectory);
+        request.setWorkingDirectory(workingDirectory != null ? workingDirectory.toFile() : null);
         request.setMaxMemory(maxMemory);
         request.setProtectedAuthenticationPath(protectedAuthenticationPath);
 
@@ -515,22 +534,22 @@ public abstract class AbstractJarsignerMojo extends AbstractMojo {
         }
 
         // Adds proxy information.
-        Proxy activeProxy = getActiveProxy();
-        if (activeProxy != null && StringUtils.isNotEmpty(activeProxy.getHost())) {
-            additionalArguments.add("-J-Dhttp.proxyHost=" + activeProxy.getHost());
-            additionalArguments.add("-J-Dhttps.proxyHost=" + activeProxy.getHost());
-            additionalArguments.add("-J-Dftp.proxyHost=" + activeProxy.getHost());
+        Proxy proxy = getActiveProxy();
+        if (proxy != null && StringUtils.isNotEmpty(proxy.getHost())) {
+            additionalArguments.add("-J-Dhttp.proxyHost=" + proxy.getHost());
+            additionalArguments.add("-J-Dhttps.proxyHost=" + proxy.getHost());
+            additionalArguments.add("-J-Dftp.proxyHost=" + proxy.getHost());
 
-            if (activeProxy.getPort() > 0) {
-                additionalArguments.add("-J-Dhttp.proxyPort=" + activeProxy.getPort());
-                additionalArguments.add("-J-Dhttps.proxyPort=" + activeProxy.getPort());
-                additionalArguments.add("-J-Dftp.proxyPort=" + activeProxy.getPort());
+            if (proxy.getPort() > 0) {
+                additionalArguments.add("-J-Dhttp.proxyPort=" + proxy.getPort());
+                additionalArguments.add("-J-Dhttps.proxyPort=" + proxy.getPort());
+                additionalArguments.add("-J-Dftp.proxyPort=" + proxy.getPort());
             }
 
-            if (StringUtils.isNotEmpty(activeProxy.getNonProxyHosts())) {
-                additionalArguments.add("-J-Dhttp.nonProxyHosts=\"" + activeProxy.getNonProxyHosts() + "\"");
+            if (StringUtils.isNotEmpty(proxy.getNonProxyHosts())) {
+                additionalArguments.add("-J-Dhttp.nonProxyHosts=\"" + proxy.getNonProxyHosts() + "\"");
 
-                additionalArguments.add("-J-Dftp.nonProxyHosts=\"" + activeProxy.getNonProxyHosts() + "\"");
+                additionalArguments.add("-J-Dftp.nonProxyHosts=\"" + proxy.getNonProxyHosts() + "\"");
             }
         }
 
@@ -545,8 +564,21 @@ public abstract class AbstractJarsignerMojo extends AbstractMojo {
         try {
             executeJarSigner(jarSigner, request);
         } catch (JavaToolException e) {
-            throw new MojoExecutionException(getMessage("commandLineException", e.getMessage()), e);
+            throw new MojoException(getMessage("commandLineException", e.getMessage()), e);
         }
+    }
+
+    /**
+     * Mirrors {@code Settings.getActiveProxy()} of the Maven 3 settings model: the first proxy marked active.
+     */
+    private Proxy getActiveProxy() {
+        if (session == null || session.getSettings() == null) {
+            return null;
+        }
+        return session.getSettings().getProxies().stream()
+                .filter(Proxy::isActive)
+                .findFirst()
+                .orElse(null);
     }
 
     /**
@@ -555,17 +587,20 @@ public abstract class AbstractJarsignerMojo extends AbstractMojo {
      * @param jarSigner the JarSigner execution interface
      * @param request the JarSignerRequest with parameters JarSigner should use
      * @throws JavaToolException if jarsigner could not be invoked
-     * @throws MojoExecutionException if the invocation of jarsigner succeeded, but returned a non-zero exit code
+     * @throws MojoException if the invocation of jarsigner succeeded, but returned a non-zero exit code
      */
     protected abstract void executeJarSigner(JarSigner jarSigner, JarSignerRequest request)
-            throws JavaToolException, MojoExecutionException;
+            throws JavaToolException, MojoException;
 
-    protected String decrypt(String encoded) throws MojoExecutionException {
+    protected String decrypt(String encoded) throws MojoException {
+        if (encoded == null) {
+            return null;
+        }
         try {
-            return securityDispatcher.decrypt(encoded);
-        } catch (SecDispatcherException e) {
+            return getSecurityDispatcher().decrypt(encoded);
+        } catch (SecDispatcherException | IOException e) {
             getLog().error("error using security dispatcher: " + e.getMessage(), e);
-            throw new MojoExecutionException("error using security dispatcher: " + e.getMessage(), e);
+            throw new MojoException("error using security dispatcher: " + e.getMessage(), e);
         }
     }
 
@@ -588,24 +623,10 @@ public abstract class AbstractJarsignerMojo extends AbstractMojo {
         return new MessageFormat(ResourceBundle.getBundle("jarsigner").getString(key)).format(args);
     }
 
-    /**
-     * the part with ToolchainManager lookup once we depend on
-     * 2.0.9 (have it as prerequisite). Define as regular component field then.
-     * hint: check maven-compiler-plugin code
-     *
-     * @return Toolchain instance
-     */
     private Toolchain getToolchain() {
-        Toolchain tc = null;
         if (toolchainManager != null) {
-            tc = toolchainManager.getToolchainFromBuildContext("jdk", session);
+            return toolchainManager.getToolchainFromBuildContext(session, "jdk").orElse(null);
         }
-
-        return tc;
-    }
-
-    private Proxy getActiveProxy() {
-        Settings settings = session.getSettings();
-        return settings != null ? settings.getActiveProxy() : null;
+        return null;
     }
 }

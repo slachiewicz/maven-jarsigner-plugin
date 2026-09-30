@@ -26,9 +26,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 
-import org.apache.maven.artifact.Artifact;
-import org.apache.maven.plugin.logging.Log;
-import org.apache.maven.project.MavenProject;
+import org.apache.maven.api.plugin.Log;
 import org.apache.maven.shared.jarsigner.JarSigner;
 import org.apache.maven.shared.jarsigner.JarSignerSignRequest;
 import org.junit.jupiter.api.AfterEach;
@@ -53,7 +51,7 @@ public class JarsignerSignMojoTsaTest {
     private File folder;
 
     private Locale originalLocale;
-    private MavenProject project = mock(MavenProject.class);
+    private ProjectStub project = mock(ProjectStub.class);
     private JarSigner jarSigner = mock(JarSigner.class);
 
     private File projectDir;
@@ -71,7 +69,7 @@ public class JarsignerSignMojoTsaTest {
                 new MojoTestCreator<JarsignerSignMojo>(JarsignerSignMojo.class, project, projectDir, jarSigner);
         log = mock(Log.class);
         mojoTestCreator.setLog(log);
-        Artifact mainArtifact = TestArtifacts.createJarArtifact(projectDir, "my-project.jar");
+        TestArtifacts.TestArtifact mainArtifact = TestArtifacts.createJarArtifact(projectDir, "my-project.jar");
         when(project.getArtifact()).thenReturn(mainArtifact);
     }
 

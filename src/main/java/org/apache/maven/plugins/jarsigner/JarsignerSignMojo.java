@@ -18,11 +18,9 @@
  */
 package org.apache.maven.plugins.jarsigner;
 
-import javax.inject.Inject;
-import javax.inject.Named;
-
 import java.io.File;
 import java.io.IOException;
+import java.nio.file.Path;
 import java.time.Duration;
 import java.util.List;
 import java.util.concurrent.Callable;
@@ -32,10 +30,9 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.stream.Collectors;
 
-import org.apache.maven.plugin.MojoExecutionException;
-import org.apache.maven.plugins.annotations.LifecyclePhase;
-import org.apache.maven.plugins.annotations.Mojo;
-import org.apache.maven.plugins.annotations.Parameter;
+import org.apache.maven.api.plugin.MojoException;
+import org.apache.maven.api.plugin.annotations.Mojo;
+import org.apache.maven.api.plugin.annotations.Parameter;
 import org.apache.maven.plugins.jarsigner.TsaSelector.TsaServer;
 import org.apache.maven.shared.jarsigner.JarSigner;
 import org.apache.maven.shared.jarsigner.JarSignerRequest;
@@ -44,9 +41,7 @@ import org.apache.maven.shared.jarsigner.JarSignerUtil;
 import org.apache.maven.shared.utils.cli.Commandline;
 import org.apache.maven.shared.utils.cli.javatool.JavaToolException;
 import org.apache.maven.shared.utils.cli.javatool.JavaToolResult;
-import org.apache.maven.toolchain.ToolchainManager;
 import org.codehaus.plexus.util.StringUtils;
-import org.sonatype.plexus.components.sec.dispatcher.SecDispatcher;
 
 /**
  * Signs a project artifact and attachments using jarsigner.
@@ -54,7 +49,7 @@ import org.sonatype.plexus.components.sec.dispatcher.SecDispatcher;
  * @author <a href="cs@schulte.it">Christian Schulte</a>
  * @since 1.0
  */
-@Mojo(name = "sign", defaultPhase = LifecyclePhase.PACKAGE, threadSafe = true)
+@Mojo(name = "sign", defaultPhase = "package")
 public class JarsignerSignMojo extends AbstractJarsignerMojo {
 
     /**
@@ -188,7 +183,7 @@ public class JarsignerSignMojo extends AbstractJarsignerMojo {
      * @since 1.5
      */
     @Parameter(property = "jarsigner.certchain", required = false)
-    private File certchain;
+    private Path certchain;
 
     /**
      * How many times to try to sign a jar (assuming each previous attempt is a failure). This option may be desirable
@@ -230,19 +225,6 @@ public class JarsignerSignMojo extends AbstractJarsignerMojo {
     /** Exponent limit for exponential wait after failure function. 2^20 = 1048576 sec ~= 12 days. */
     private static final int MAX_WAIT_EXPONENT_ATTEMPT = 20;
 
-    @Inject
-    public JarsignerSignMojo(
-            JarSigner jarSigner,
-            ToolchainManager toolchainManager,
-            @Named("mng-4384") SecDispatcher securityDispatcher) {
-        super(jarSigner, toolchainManager, securityDispatcher);
-    }
-
-    // for testing; invoked via reflection
-    JarsignerSignMojo() {
-        super(null, null, null);
-    }
-
     @Override
     protected String getCommandlineInfo(final Commandline commandLine) {
         String commandLineInfo = commandLine != null ? commandLine.toString() : null;
@@ -255,18 +237,18 @@ public class JarsignerSignMojo extends AbstractJarsignerMojo {
     }
 
     @Override
-    protected void preProcessArchive(final File archive) throws MojoExecutionException {
+    protected void preProcessArchive(final File archive) throws MojoException {
         if (removeExistingSignatures) {
             try {
                 JarSignerUtil.unsignArchive(archive);
             } catch (IOException e) {
-                throw new MojoExecutionException("Failed to unsign archive " + archive + ": " + e.getMessage(), e);
+                throw new MojoException("Failed to unsign archive " + archive + ": " + e.getMessage(), e);
             }
         }
     }
 
     @Override
-    protected void validateParameters() throws MojoExecutionException {
+    protected void validateParameters() throws MojoException {
         super.validateParameters();
 
         if (maxTries < 1) {
@@ -304,11 +286,11 @@ public class JarsignerSignMojo extends AbstractJarsignerMojo {
      * {@inheritDoc}
      */
     @Override
-    protected JarSignerRequest createRequest(File archive) throws MojoExecutionException {
+    protected JarSignerRequest createRequest(File archive) throws MojoException {
         JarSignerSignRequest request = new JarSignerSignRequest();
         request.setSigfile(sigfile);
         updateJarSignerRequestWithTsa(request, tsaSelector.getServer());
-        request.setCertchain(certchain);
+        request.setCertchain(certchain != null ? certchain.toFile() : null);
 
         // Special handling for passwords through the Maven Security Dispatcher
         request.setKeypass(decrypt(keypass));
@@ -327,7 +309,7 @@ public class JarsignerSignMojo extends AbstractJarsignerMojo {
      * {@inheritDoc} Processing of files may be parallelized for increased performance.
      */
     @Override
-    protected void processArchives(List<File> archives) throws MojoExecutionException {
+    protected void processArchives(List<File> archives) throws MojoException {
         ExecutorService executor = Executors.newFixedThreadPool(threadCount);
         List<Future<Void>> futures = archives.stream()
                 .map(file -> executor.submit((Callable<Void>) () -> {
@@ -341,12 +323,12 @@ public class JarsignerSignMojo extends AbstractJarsignerMojo {
             }
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
-            throw new MojoExecutionException("Thread interrupted while waiting for jarsigner to complete", e);
+            throw new MojoException("Thread interrupted while waiting for jarsigner to complete", e);
         } catch (ExecutionException e) {
-            if (e.getCause() instanceof MojoExecutionException) {
-                throw (MojoExecutionException) e.getCause();
+            if (e.getCause() instanceof MojoException) {
+                throw (MojoException) e.getCause();
             }
-            throw new MojoExecutionException("Error processing archives", e);
+            throw new MojoException("Error processing archives", e);
         } finally {
             // Shutdown of thread pool. If an Exception occurred, remaining threads will be aborted "best effort"
             executor.shutdownNow();
@@ -358,11 +340,11 @@ public class JarsignerSignMojo extends AbstractJarsignerMojo {
      *
      * Will retry signing up to maxTries times if it fails.
      *
-     * @throws MojoExecutionException if all signing attempts fail
+     * @throws MojoException if all signing attempts fail
      */
     @Override
     protected void executeJarSigner(JarSigner jarSigner, JarSignerRequest request)
-            throws JavaToolException, MojoExecutionException {
+            throws JavaToolException, MojoException {
         for (int attempt = 0; attempt < maxTries; attempt++) {
             JavaToolResult result = jarSigner.execute(request);
             int resultCode = result.getExitCode();
@@ -376,8 +358,7 @@ public class JarsignerSignMojo extends AbstractJarsignerMojo {
                 updateJarSignerRequestWithTsa((JarSignerSignRequest) request, tsaSelector.getServer());
             } else {
                 // Last attempt failed, use this failure as resulting failure
-                throw new MojoExecutionException(
-                        getMessage("failure", getCommandlineInfo(result.getCommandline()), resultCode));
+                throw new MojoException(getMessage("failure", getCommandlineInfo(result.getCommandline()), resultCode));
             }
         }
     }
@@ -396,12 +377,12 @@ public class JarsignerSignMojo extends AbstractJarsignerMojo {
          *
          * @param attempt the attempt number (0 is the first)
          * @param maxRetryDelay the maximum duration to sleep (may be zero)
-         * @throws MojoExecutionException if the sleep was interrupted
+         * @throws MojoException if the sleep was interrupted
          */
-        void waitAfterFailure(int attempt, Duration maxRetryDelay) throws MojoExecutionException;
+        void waitAfterFailure(int attempt, Duration maxRetryDelay) throws MojoException;
     }
 
-    private void defaultWaitStrategy(int attempt, Duration maxRetryDelay) throws MojoExecutionException {
+    private void defaultWaitStrategy(int attempt, Duration maxRetryDelay) throws MojoException {
         waitAfterFailure(attempt, maxRetryDelay, Thread::sleep);
     }
 
@@ -412,7 +393,7 @@ public class JarsignerSignMojo extends AbstractJarsignerMojo {
     }
 
     /** Package private for testing */
-    void waitAfterFailure(int attempt, Duration maxRetryDelay, Sleeper sleeper) throws MojoExecutionException {
+    void waitAfterFailure(int attempt, Duration maxRetryDelay, Sleeper sleeper) throws MojoException {
         // Use attempt as exponent in the exponential function, but limit it to avoid too big values.
         // Clamp to >= 0 to avoid fractional delays for negative attempt values.
         int exponentAttempt = Math.max(0, Math.min(attempt, MAX_WAIT_EXPONENT_ATTEMPT));
@@ -424,7 +405,7 @@ public class JarsignerSignMojo extends AbstractJarsignerMojo {
                 sleeper.sleep(delayMillis);
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
-                throw new MojoExecutionException("Thread interrupted while waiting after failure", e);
+                throw new MojoException("Thread interrupted while waiting after failure", e);
             }
         }
     }

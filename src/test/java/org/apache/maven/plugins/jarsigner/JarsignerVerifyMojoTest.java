@@ -22,10 +22,8 @@ import java.io.File;
 import java.util.LinkedHashMap;
 import java.util.Map;
 
-import org.apache.maven.artifact.Artifact;
-import org.apache.maven.plugin.MojoExecutionException;
-import org.apache.maven.plugin.logging.Log;
-import org.apache.maven.project.MavenProject;
+import org.apache.maven.api.plugin.Log;
+import org.apache.maven.api.plugin.MojoException;
 import org.apache.maven.shared.jarsigner.JarSigner;
 import org.apache.maven.shared.jarsigner.JarSignerVerifyRequest;
 import org.junit.jupiter.api.BeforeEach;
@@ -52,7 +50,7 @@ public class JarsignerVerifyMojoTest {
     @TempDir
     private File folder;
 
-    private MavenProject project = mock(MavenProject.class);
+    private ProjectStub project = mock(ProjectStub.class);
     private JarSigner jarSigner = mock(JarSigner.class);
     private File dummyMavenProjectDir;
     private Map<String, String> configuration = new LinkedHashMap<>();
@@ -72,7 +70,8 @@ public class JarsignerVerifyMojoTest {
     /** Standard Java project with nothing special configured */
     @Test
     public void testStandardJavaProject() throws Exception {
-        Artifact mainArtifact = TestArtifacts.createJarArtifact(dummyMavenProjectDir, "my-project.jar");
+        TestArtifacts.TestArtifact mainArtifact =
+                TestArtifacts.createJarArtifact(dummyMavenProjectDir, "my-project.jar");
         when(project.getArtifact()).thenReturn(mainArtifact);
         when(jarSigner.execute(any(JarSignerVerifyRequest.class))).thenReturn(RESULT_OK);
         JarsignerVerifyMojo mojo = mojoTestCreator.configure(configuration);
@@ -103,7 +102,8 @@ public class JarsignerVerifyMojoTest {
     /** Invocing jarsigner with the -certs parameter */
     @Test
     public void testCertsTrue() throws Exception {
-        Artifact mainArtifact = TestArtifacts.createJarArtifact(dummyMavenProjectDir, "my-project.jar");
+        TestArtifacts.TestArtifact mainArtifact =
+                TestArtifacts.createJarArtifact(dummyMavenProjectDir, "my-project.jar");
         when(project.getArtifact()).thenReturn(mainArtifact);
         when(jarSigner.execute(any(JarSignerVerifyRequest.class))).thenReturn(RESULT_OK);
         configuration.put("certs", "true");
@@ -117,12 +117,13 @@ public class JarsignerVerifyMojoTest {
     /** When the jarsigner signing verification check tells there is a problem with the signing of the file */
     @Test
     public void testVerifyFailure() throws Exception {
-        Artifact mainArtifact = TestArtifacts.createJarArtifact(dummyMavenProjectDir, "my-project.jar");
+        TestArtifacts.TestArtifact mainArtifact =
+                TestArtifacts.createJarArtifact(dummyMavenProjectDir, "my-project.jar");
         when(project.getArtifact()).thenReturn(mainArtifact);
         when(jarSigner.execute(any(JarSignerVerifyRequest.class))).thenReturn(RESULT_ERROR);
         JarsignerVerifyMojo mojo = mojoTestCreator.configure(configuration);
 
-        MojoExecutionException mojoException = assertThrows(MojoExecutionException.class, () -> {
+        MojoException mojoException = assertThrows(MojoException.class, () -> {
             mojo.execute();
         });
         assertTrue(mojoException.getMessage().contains(String.valueOf(RESULT_ERROR.getExitCode())));
@@ -135,7 +136,7 @@ public class JarsignerVerifyMojoTest {
     @Test
     public void testErrorWhenNotSignedOnExistingSigning() throws Exception {
         File signedJar = TestArtifacts.createDummySignedJarFile(new File(dummyMavenProjectDir, "my-project.jar"));
-        Artifact mainArtifact = TestArtifacts.createArtifact(signedJar);
+        TestArtifacts.TestArtifact mainArtifact = TestArtifacts.createArtifact(signedJar);
         when(project.getArtifact()).thenReturn(mainArtifact);
         when(jarSigner.execute(any(JarSignerVerifyRequest.class))).thenReturn(RESULT_OK);
         configuration.put("errorWhenNotSigned", "true");
@@ -150,14 +151,15 @@ public class JarsignerVerifyMojoTest {
     /** When setting errorWhenNotSigned, for file that does not have existing signing (should fail) */
     @Test
     public void testErrorWhenNotSignedOnNonExistingSigning() throws Exception {
-        Artifact mainArtifact = TestArtifacts.createJarArtifact(dummyMavenProjectDir, "my-project.jar");
+        TestArtifacts.TestArtifact mainArtifact =
+                TestArtifacts.createJarArtifact(dummyMavenProjectDir, "my-project.jar");
         when(project.getArtifact()).thenReturn(mainArtifact);
         when(jarSigner.execute(any(JarSignerVerifyRequest.class))).thenReturn(RESULT_OK);
         configuration.put("errorWhenNotSigned", "true");
 
         JarsignerVerifyMojo mojo = mojoTestCreator.configure(configuration);
 
-        MojoExecutionException mojoException = assertThrows(MojoExecutionException.class, () -> {
+        MojoException mojoException = assertThrows(MojoException.class, () -> {
             mojo.execute();
         });
         assertTrue(mojoException.getMessage().contains(mainArtifact.getFile().getPath()));
@@ -171,7 +173,8 @@ public class JarsignerVerifyMojoTest {
         TestArtifacts.createDummyZipFile(new File(archiveDirectory, "included.jar"));
         TestArtifacts.createDummyZipFile(new File(archiveDirectory, "not-this.par"));
 
-        Artifact mainArtifact = TestArtifacts.createJarArtifact(dummyMavenProjectDir, "my-project.jar");
+        TestArtifacts.TestArtifact mainArtifact =
+                TestArtifacts.createJarArtifact(dummyMavenProjectDir, "my-project.jar");
         when(project.getArtifact()).thenReturn(mainArtifact);
         when(jarSigner.execute(any(JarSignerVerifyRequest.class))).thenReturn(RESULT_OK);
         configuration.put("archiveDirectory", archiveDirectory.getPath());

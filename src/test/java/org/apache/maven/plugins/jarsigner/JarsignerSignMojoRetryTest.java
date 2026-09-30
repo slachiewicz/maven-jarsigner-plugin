@@ -25,12 +25,10 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicLong;
 
-import org.apache.maven.artifact.Artifact;
-import org.apache.maven.plugin.MojoExecutionException;
-import org.apache.maven.plugin.logging.Log;
+import org.apache.maven.api.plugin.Log;
+import org.apache.maven.api.plugin.MojoException;
 import org.apache.maven.plugins.jarsigner.JarsignerSignMojo.Sleeper;
 import org.apache.maven.plugins.jarsigner.JarsignerSignMojo.WaitStrategy;
-import org.apache.maven.project.MavenProject;
 import org.apache.maven.shared.jarsigner.JarSigner;
 import org.apache.maven.shared.jarsigner.JarSignerSignRequest;
 import org.apache.maven.shared.utils.cli.javatool.JavaToolResult;
@@ -59,7 +57,7 @@ public class JarsignerSignMojoRetryTest {
     private File folder;
 
     private Locale originalLocale;
-    private MavenProject project = mock(MavenProject.class);
+    private ProjectStub project = mock(ProjectStub.class);
     private JarSigner jarSigner = mock(JarSigner.class);
     private WaitStrategy waitStrategy = mock(WaitStrategy.class);
     private File projectDir;
@@ -77,7 +75,7 @@ public class JarsignerSignMojoRetryTest {
                 new MojoTestCreator<JarsignerSignMojo>(JarsignerSignMojo.class, project, projectDir, jarSigner);
         log = mock(Log.class);
         mojoTestCreator.setLog(log);
-        Artifact mainArtifact = TestArtifacts.createJarArtifact(projectDir, "my-project.jar");
+        TestArtifacts.TestArtifact mainArtifact = TestArtifacts.createJarArtifact(projectDir, "my-project.jar");
         when(project.getArtifact()).thenReturn(mainArtifact);
     }
 
@@ -106,7 +104,7 @@ public class JarsignerSignMojoRetryTest {
         configuration.put("maxTries", "1");
         mojoTestCreator.setWaitStrategy(waitStrategy);
         JarsignerSignMojo mojo = mojoTestCreator.configure(configuration);
-        assertThrows(MojoExecutionException.class, () -> {
+        assertThrows(MojoException.class, () -> {
             mojo.execute();
         });
         verify(jarSigner).execute(any());
@@ -136,7 +134,7 @@ public class JarsignerSignMojoRetryTest {
         configuration.put("maxTries", "2");
         mojoTestCreator.setWaitStrategy(waitStrategy);
         JarsignerSignMojo mojo = mojoTestCreator.configure(configuration);
-        assertThrows(MojoExecutionException.class, () -> {
+        assertThrows(MojoException.class, () -> {
             mojo.execute();
         });
         verify(jarSigner, times(2)).execute(any());
@@ -152,7 +150,7 @@ public class JarsignerSignMojoRetryTest {
 
         JarsignerSignMojo mojo = mojoTestCreator.configure(configuration);
 
-        assertThrows(MojoExecutionException.class, () -> {
+        assertThrows(MojoException.class, () -> {
             mojo.execute();
         });
 
@@ -263,7 +261,7 @@ public class JarsignerSignMojoRetryTest {
         Sleeper iterruptedSleeper = value -> {
             throw new InterruptedException("Thread was interrupted while sleeping.");
         };
-        MojoExecutionException mojoException = assertThrows(MojoExecutionException.class, () -> {
+        MojoException mojoException = assertThrows(MojoException.class, () -> {
             mojo.waitAfterFailure(0, Duration.ofSeconds(10), iterruptedSleeper);
         });
         assertTrue(mojoException.getMessage().contains("interrupted while waiting after failure"));
@@ -284,7 +282,7 @@ public class JarsignerSignMojoRetryTest {
         configuration.put("maxTries", "5");
         JarsignerSignMojo mojo = mojoTestCreator.configure(configuration);
 
-        MojoExecutionException mojoException = assertThrows(MojoExecutionException.class, () -> {
+        MojoException mojoException = assertThrows(MojoException.class, () -> {
             mojo.execute();
         });
 

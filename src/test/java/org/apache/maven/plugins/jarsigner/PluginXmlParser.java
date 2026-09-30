@@ -25,10 +25,9 @@ import java.io.InputStream;
 import java.util.LinkedHashMap;
 import java.util.Map;
 
-import org.apache.maven.plugin.Mojo;
+import org.apache.maven.api.plugin.Mojo;
 import org.w3c.dom.Document;
 import org.w3c.dom.Element;
-import org.w3c.dom.Node;
 import org.w3c.dom.NodeList;
 
 /**
@@ -38,7 +37,7 @@ import org.w3c.dom.NodeList;
 public class PluginXmlParser {
     private static final String MOJO_IMPLEMENTATION_TAG = "implementation";
     private static final String MOJO_TAG = "mojo";
-    private static final String CONF_DEFAULT_VALUE = "default-value";
+    private static final String PARAMETER_DEFAULT_VALUE = "defaultValue";
     private static final String PLUGIN_XML_PATH = "META-INF/maven/plugin.xml";
 
     public static Map<String, String> getMojoDefaultConfiguration(Class<? extends Mojo> mojoClass) throws Exception {
@@ -54,28 +53,17 @@ public class PluginXmlParser {
             throw new RuntimeException("Mojo not found for class: " + mojoClass.getName());
         }
 
-        Element configurationElement =
-                (Element) mojoElement.getElementsByTagName("configuration").item(0);
-        NodeList configurationList = configurationElement.getChildNodes();
-        for (int i = 0; i < configurationList.getLength(); i++) {
-            Node child = configurationList.item(i);
-            if (child.getNodeType() != Node.ELEMENT_NODE) {
-                continue;
-            }
-            configurationElement = (Element) child;
-            String configurationParameterName = configurationElement.getTagName();
-
-            if (configurationElement.hasAttribute(CONF_DEFAULT_VALUE)) {
-                String defaultValue = configurationElement.getAttribute(CONF_DEFAULT_VALUE);
-                defaultConfiguration.put(configurationParameterName, defaultValue);
-            } else {
-                if (configurationElement.hasAttribute("implementation")) {
-                    String implementation = configurationElement.getAttribute("implementation");
-                    // String arrays are per default set to empty array if user does not configure them
-                    if ("java.lang.String[]".equals(implementation)) {
-                        defaultConfiguration.put(configurationParameterName, "");
-                    }
-                }
+        NodeList parameters = mojoElement.getElementsByTagName("parameter");
+        for (int i = 0; i < parameters.getLength(); i++) {
+            Element parameter = (Element) parameters.item(i);
+            String name = getTextContent(parameter, "name");
+            String defaultValue = getTextContent(parameter, PARAMETER_DEFAULT_VALUE);
+            if (defaultValue != null) {
+                defaultConfiguration.put(name, defaultValue);
+            } else if ("java.lang.String[]".equals(getTextContent(parameter, "type"))
+                    && getTextContent(parameter, "expression") != null) {
+                // String arrays bound to a property are per default set to empty array if user does not configure them
+                defaultConfiguration.put(name, "");
             }
         }
         return defaultConfiguration;
